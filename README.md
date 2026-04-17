@@ -6,7 +6,7 @@ resulting sequence.
 
 ## Run
 
-```
+```bat
 .venv\Scripts\python.exe launch.py
 ```
 
