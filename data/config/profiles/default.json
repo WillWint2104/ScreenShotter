@@ -1,0 +1,33 @@
+{
+  "name": "default",
+  "created_at": "2026-04-24T00:00:00",
+  "fingerprint": {
+    "url_pattern": "",
+    "scrollable_container_count": 0,
+    "container_geometry_ratios": [],
+    "landmark_words": [],
+    "field_label_signature": [],
+    "section_header_tokens": [],
+    "layout_region_count": 0
+  },
+  "section_definitions": [],
+  "capture_params": {
+    "delay_ms": 800,
+    "similarity_threshold": 0.98,
+    "browser_zoom_recommended": 150
+  },
+  "expander_triggers": [
+    "show more", "read more", "expand", "see more",
+    "view more", "load more", "show all"
+  ],
+  "protected_patterns": [
+    "submit", "escape", "cancel", "skip", "next",
+    "back", "flag", "close", "dismiss", "abort",
+    "finish", "complete", "done"
+  ],
+  "proficiency_score": 0.0,
+  "successful_sessions": 0,
+  "total_sessions": 0,
+  "is_proficient": false,
+  "notes": "General fallback profile. Used when no specific profile matches."
+}
