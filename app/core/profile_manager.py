@@ -74,6 +74,26 @@ class ProfileManager:
                     path, profile.name,
                 )
                 return False
+            # Slug collision: two distinct profile.name values can
+            # sanitize to the same slug (e.g., 'My Profile' and
+            # 'my_profile'). Refuse to silently overwrite a file
+            # that belongs to a different profile name.
+            if path.exists():
+                try:
+                    existing = json.loads(path.read_text(encoding="utf-8"))
+                    existing_name = existing.get("name", "")
+                    if existing_name and existing_name != profile.name:
+                        logger.warning(
+                            "Slug collision: %r sanitizes to %s.json which "
+                            "already belongs to %r. Rejecting save.",
+                            profile.name, slug, existing_name,
+                        )
+                        return False
+                except Exception as exc:
+                    logger.warning(
+                        "Could not read existing %s for collision check: %s",
+                        path.name, exc,
+                    )
             path.write_text(
                 json.dumps(profile.as_dict(), indent=2),
                 encoding="utf-8"
@@ -154,13 +174,24 @@ class ProfileManager:
         if not profile:
             return
 
+        # Clamp caller-supplied confidence to [0.0, 1.0] so a bad
+        # call site cannot push proficiency outside valid bounds.
+        try:
+            clamped = max(0.0, min(1.0, float(capture_confidence)))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid capture_confidence %r for profile %s; using 0.0",
+                capture_confidence, profile_name,
+            )
+            clamped = 0.0
+
         profile.total_sessions += 1
         if success:
             profile.successful_sessions += 1
 
         # Weighted rolling average: 70% existing, 30% new score
         profile.proficiency_score = round(
-            profile.proficiency_score * 0.70 + capture_confidence * 0.30, 4
+            profile.proficiency_score * 0.70 + clamped * 0.30, 4
         )
         profile.check_proficiency()
         self.save_profile(profile)
@@ -291,15 +322,17 @@ def _url_patterns_match(a: str, b: str) -> bool:
 
     Both patterns come from _extract_url_pattern(), which keeps the
     netloc followed by up to the first two stable path segments.
-    We require the domain to match, and every path segment the
-    shorter pattern carries must match too. Extra segments on the
-    longer side do not cause a mismatch.
+
+    Host-only patterns (no path segments) are treated as "no URL
+    signal" and return False so a bare-domain profile cannot
+    blanket-match every page on that domain. At least one path
+    segment on each side is required for a URL match to count.
     """
     try:
         a_parts = [p for p in a.lower().split("/") if p]
         b_parts = [p for p in b.lower().split("/") if p]
-        if not a_parts or not b_parts:
-            return False
+        if len(a_parts) < 2 or len(b_parts) < 2:
+            return False  # host-only is not a distinguishing signal
         if a_parts[0] != b_parts[0]:
             return False
         shared = min(len(a_parts), len(b_parts))
