@@ -84,7 +84,7 @@ downstream system, not here.
 
 ## Layer Model
 
-```
+```text
 LAYER 0 — DATA
 Raw files. No logic.
   sessions/       Per-session capture outputs
@@ -373,7 +373,7 @@ Every applied change is traceable to a specific recommendation.
 
 ## Data Structure
 
-```
+```text
 screenshotter/
   app/
     core/
@@ -436,7 +436,7 @@ screenshotter/
 
 ## Build Order
 
-```
+```text
 Spec 1   uia_utils.py              Foundation UIA API
 Spec 2   models/                   All data models before logic
 Spec 3   profile_manager.py        Profile layer
