@@ -85,12 +85,12 @@ downstream system, not here.
 ## Layer Model
 
 ```text
-LAYER 0 — DATA
-Raw files. No logic.
-  sessions/       Per-session capture outputs
-  evaluations/    Accumulated capture validation results
-  improvements/   Improvement reports and approved changes
-  config/         Profiles, rules, parameters
+LAYER 0 — DATA & CONFIG
+Raw files. No logic. Two sibling top-level directories:
+  data/sessions/       Per-session capture outputs
+  data/evaluations/    Accumulated capture validation results
+  data/improvements/   Improvement reports and approved changes
+  config/              Profiles, rules, parameters (peer of data/, not inside it)
 
 LAYER 1 — FOUNDATION
   uia_utils.py
@@ -126,9 +126,17 @@ LAYER 5 — CAPTURE ENGINE
   scroll_logic.py      (extended with UIA ScrollPattern)
   file_manager.py      (reused)
   manifest_writer.py   (extended with section metadata)
-    Captures each section completely.
-    Scrolls via UIA element reference, not keyboard input.
-    Tags every screenshot with section metadata.
+  tagger.py
+    Producer (capture_engine + scroll_logic + file_manager):
+      Captures each section completely.
+      Scrolls via UIA element reference, not keyboard input.
+      Emits section metadata alongside each screenshot, but writes no
+      persistent tag.
+    Consumer (tagger.py):
+      Sole writer of persistent section tags.
+      Consumes emitted metadata and applies tags to images and the
+      manifest. Every screenshot belongs to exactly one section tag
+      when tagger.py is done.
 
 LAYER 6 — BATCHER
   batcher.py
