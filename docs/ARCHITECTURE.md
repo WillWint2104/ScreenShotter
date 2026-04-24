@@ -189,7 +189,7 @@ When no profile match is found:
 ### Fingerprinting — multiple signals required
 
 No single signal determines a profile match.
-All of the following are used together:
+The following are used together:
 
 - URL pattern (domain and stable path pattern, not full URL)
 - Scrollable container count
@@ -257,11 +257,24 @@ If no meaningful state change is detected:
 
 ### Protected elements — never clicked under any circumstances
 
-Any element whose name or accessible value contains:
-submit, escape, cancel, skip, next, back, flag,
-close, dismiss, abort, finish, complete, done
+Any element whose name or accessible value contains any of the following tokens:
+
+- abort
+- back
+- cancel
+- close
+- complete
+- dismiss
+- done
+- escape
+- finish
+- flag
+- next
+- skip
+- submit
 
 Case-insensitive matching.
+Kept alphabetised for easier diffing.
 This list is additive — future entries only, never removed.
 
 ### Expansion log format
@@ -331,7 +344,7 @@ dimension ratings, or any content-level judgements.
 
 - ui_fields and buttons are never merged into response content groups
 - prompt is never merged into conversation_history
-- response_a and response_b are never merged together
+- response_a and response_b are never merged
 - instructions are never merged into examples
 - Any screenshot with low-confidence classification goes to unknown
 - unknown is never force-fitted into any named section
