@@ -384,9 +384,11 @@ silently placing content in the wrong group.
 
 ### Approval workflow
 
-Improvement engine produces `improvement_report_{date}.json`.
+Improvement engine produces `improvement_report_{date}.json` where
+`{date}` is UTC `YYYY-MM-DD`.
 Human reviews each recommendation.
-Approved changes are recorded in `approved_changes_{date}.json`.
+Approved changes are recorded in `approved_changes_{date}.json` using
+the same UTC `YYYY-MM-DD` format.
 Changes are applied manually or via a dedicated apply step.
 Every applied change is traceable to a specific recommendation.
 
@@ -471,6 +473,27 @@ Spec 9   improvement_engine.py     Pattern detection and recommendations
 
 Nothing is built without the spec for that layer being reviewed first.
 Nothing is incorporated without its own assessment passing.
+
+### Reused and extended modules
+
+Layer 5 references four modules carried over from ScrollCapture
+(`capture_engine.py`, `scroll_logic.py`, `file_manager.py`,
+`manifest_writer.py`). These do not have entries in the Spec 1–9 list
+above because they retain their original ScrollCapture specs.
+
+Extensions to a reused module (marked "extended" in the Layer Model)
+are documented under the spec in this project that introduces the new
+behaviour — no separate mini-spec is required. Concretely:
+
+- `scroll_logic.py` — UIA ScrollPattern extension is covered by Spec 1
+  (foundation UIA API).
+- `manifest_writer.py` — section-metadata extension is covered by
+  Spec 2 (models), since the metadata shape is defined there.
+
+Any extension that does not cleanly fall under an existing Spec 1–9
+must be added to the Build Order as a numbered spec before it is
+built. Reused modules are never modified without a spec citation in
+the commit.
 
 ---
 
