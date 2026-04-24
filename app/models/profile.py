@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 @dataclass
 class PageFingerprint:
@@ -71,8 +71,8 @@ class CaptureProfile:
     is_proficient: bool = False
     notes: str = ""
 
-    PROFICIENCY_SCORE_THRESHOLD: float = 0.85
-    PROFICIENCY_SESSION_MINIMUM: int = 5
+    PROFICIENCY_SCORE_THRESHOLD: ClassVar[float] = 0.85
+    PROFICIENCY_SESSION_MINIMUM: ClassVar[int] = 5
 
     def check_proficiency(self) -> bool:
         self.is_proficient = (

@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 
-VALID_SECTION_GROUPS = {
+VALID_SECTION_GROUPS = frozenset({
     "instructions",
     "prompt",
     "conversation_history",
@@ -10,7 +10,7 @@ VALID_SECTION_GROUPS = {
     "ui_fields",
     "buttons",
     "unknown",
-}
+})
 
 @dataclass
 class SectionGroup:
