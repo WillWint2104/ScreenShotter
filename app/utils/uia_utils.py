@@ -29,40 +29,50 @@ logger = logging.getLogger(__name__)
 # Win32 handles — declare restype/argtypes once so HANDLE/HWND/HMONITOR are
 # treated as pointer-sized on 64-bit Python (ctypes otherwise defaults to
 # c_int and truncates the high 32 bits of pointer-sized returns).
+#
+# Guarded behind os.name == "nt" so importing this module on Linux/macOS
+# (CI, static analysis, test collection) does not raise AttributeError on
+# ctypes.windll. Every public function still degrades to None/False when
+# _k32/_u32 are None, matching the "failure returns None/False, never
+# raises" contract in the module docstring.
 # ---------------------------------------------------------------------------
 
-_k32 = ctypes.windll.kernel32
-_u32 = ctypes.windll.user32
+_k32: Optional[Any] = None
+_u32: Optional[Any] = None
 
-_k32.OpenProcess.restype = wintypes.HANDLE
-_k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-_k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
-_k32.QueryFullProcessImageNameW.argtypes = [
-    wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
-]
-_k32.CloseHandle.restype = wintypes.BOOL
-_k32.CloseHandle.argtypes = [wintypes.HANDLE]
+if os.name == "nt":  # pragma: no branch - module is Windows-only in practice
+    _k32 = ctypes.windll.kernel32
+    _u32 = ctypes.windll.user32
 
-_u32.GetForegroundWindow.restype = wintypes.HWND
-_u32.GetForegroundWindow.argtypes = []
-_u32.GetWindowThreadProcessId.restype = wintypes.DWORD
-_u32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-_u32.GetWindowRect.restype = wintypes.BOOL
-_u32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-_u32.MonitorFromWindow.restype = wintypes.HMONITOR
-_u32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
-_u32.IsWindowVisible.restype = wintypes.BOOL
-_u32.IsWindowVisible.argtypes = [wintypes.HWND]
-_u32.GetWindowTextLengthW.restype = ctypes.c_int
-_u32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
-_u32.GetWindowTextW.restype = ctypes.c_int
-_u32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-_u32.EnumWindows.restype = wintypes.BOOL
-_u32.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
-_u32.EnumDisplayMonitors.restype = wintypes.BOOL
-_u32.EnumDisplayMonitors.argtypes = [
-    wintypes.HDC, ctypes.POINTER(wintypes.RECT), ctypes.c_void_p, wintypes.LPARAM,
-]
+    _k32.OpenProcess.restype = wintypes.HANDLE
+    _k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    _k32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+    ]
+    _k32.CloseHandle.restype = wintypes.BOOL
+    _k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    _u32.GetForegroundWindow.restype = wintypes.HWND
+    _u32.GetForegroundWindow.argtypes = []
+    _u32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    _u32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    _u32.GetWindowRect.restype = wintypes.BOOL
+    _u32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    _u32.MonitorFromWindow.restype = wintypes.HMONITOR
+    _u32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+    _u32.IsWindowVisible.restype = wintypes.BOOL
+    _u32.IsWindowVisible.argtypes = [wintypes.HWND]
+    _u32.GetWindowTextLengthW.restype = ctypes.c_int
+    _u32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    _u32.GetWindowTextW.restype = ctypes.c_int
+    _u32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    _u32.EnumWindows.restype = wintypes.BOOL
+    _u32.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
+    _u32.EnumDisplayMonitors.restype = wintypes.BOOL
+    _u32.EnumDisplayMonitors.argtypes = [
+        wintypes.HDC, ctypes.POINTER(wintypes.RECT), ctypes.c_void_p, wintypes.LPARAM,
+    ]
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -137,16 +147,16 @@ def _physical_to_logical(x: int, y: int, w: int, h: int) -> dict:
     """Convert a physical pixel rect to a logical pixel rect dict."""
     scale = get_scale_factor() or 1.0
     return {
-        "x": int(round(x / scale)),
-        "y": int(round(y / scale)),
-        "width": int(round(w / scale)),
-        "height": int(round(h / scale)),
+        "x": round(x / scale),
+        "y": round(y / scale),
+        "width": round(w / scale),
+        "height": round(h / scale),
     }
 
 
 def _logical_to_physical_point(x: int, y: int) -> tuple[int, int]:
     scale = get_scale_factor() or 1.0
-    return int(round(x * scale)), int(round(y * scale))
+    return round(x * scale), round(y * scale)
 
 
 def _rect_from_uia(element_ref) -> Optional[dict]:
