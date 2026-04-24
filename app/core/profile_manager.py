@@ -10,18 +10,22 @@ Uses silent assisted mode (Option C from ARCHITECTURE.md):
 """
 import json
 import logging
-import uuid
+import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from app.models.profile import (
     CaptureProfile, PageFingerprint,
     ProfileMatchResult, SectionDefinition,
 )
-from app.utils.screen_utils import get_scale_factor
 
 logger = logging.getLogger(__name__)
+
+# Whitelist for profile filename slugs: alnum, underscore, hyphen only.
+# Anything outside this set is stripped to prevent path traversal or
+# invalid filenames from profile.name values the user may supply.
+_SLUG_SAFE = re.compile(r"[^a-z0-9_-]+")
+_SLUG_MAX_LEN = 64
 
 # Profiles live here regardless of where the app is installed
 _PROFILES_DIR = Path(__file__).resolve().parents[2] / "data" / "config" / "profiles"
@@ -60,8 +64,16 @@ class ProfileManager:
     def save_profile(self, profile: CaptureProfile) -> bool:
         try:
             _PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-            slug = profile.name.lower().replace(" ", "_")
-            path = _PROFILES_DIR / f"{slug}.json"
+            slug = _safe_slug(profile.name)
+            path = (_PROFILES_DIR / f"{slug}.json").resolve()
+            # Defence-in-depth: even with the slug whitelist, verify the
+            # resolved path stays inside _PROFILES_DIR before writing.
+            if Path(_PROFILES_DIR).resolve() not in path.parents:
+                logger.warning(
+                    "Rejected profile path escape: %s (from name %r)",
+                    path, profile.name,
+                )
+                return False
             path.write_text(
                 json.dumps(profile.as_dict(), indent=2),
                 encoding="utf-8"
@@ -189,6 +201,18 @@ class ProfileManager:
 # Private helpers
 # ----------------------------------------------------------
 
+def _safe_slug(name: str) -> str:
+    """Sanitize a profile name into a safe filesystem slug.
+
+    Strips every character outside [a-z0-9_-], caps length, and
+    falls back to 'unnamed' on empty results. Used by save_profile
+    to block path traversal and invalid filename characters.
+    """
+    raw = (name or "").lower().replace(" ", "_")
+    cleaned = _SLUG_SAFE.sub("", raw)[:_SLUG_MAX_LEN]
+    return cleaned or "unnamed"
+
+
 def _score_fingerprint(
     candidate: PageFingerprint,
     reference: PageFingerprint,
@@ -263,11 +287,23 @@ def _score_fingerprint(
 
 
 def _url_patterns_match(a: str, b: str) -> bool:
-    # Simple domain + path prefix match
+    """Match on domain + shared path prefix segments.
+
+    Both patterns come from _extract_url_pattern(), which keeps the
+    netloc followed by up to the first two stable path segments.
+    We require the domain to match, and every path segment the
+    shorter pattern carries must match too. Extra segments on the
+    longer side do not cause a mismatch.
+    """
     try:
-        a_parts = a.lower().split("/")
-        b_parts = b.lower().split("/")
-        return a_parts[0] == b_parts[0]
+        a_parts = [p for p in a.lower().split("/") if p]
+        b_parts = [p for p in b.lower().split("/") if p]
+        if not a_parts or not b_parts:
+            return False
+        if a_parts[0] != b_parts[0]:
+            return False
+        shared = min(len(a_parts), len(b_parts))
+        return a_parts[:shared] == b_parts[:shared]
     except Exception:
         return False
 
@@ -306,6 +342,9 @@ def _set_overlap(a: list[str], b: list[str]) -> float:
 
 
 def _list_similarity(a: list[float], b: list[float]) -> float:
+    # Compare the overlapping prefix of two float lists; unpaired
+    # tail elements reduce the score by inflating the denominator,
+    # so different-length vectors score lower than equal-length ones.
     if not a or not b:
         return 0.0
     pairs = zip(a[:len(b)], b[:len(a)])
