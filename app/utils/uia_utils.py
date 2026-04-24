@@ -26,6 +26,45 @@ from app.utils.screen_utils import get_scale_factor
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Win32 handles — declare restype/argtypes once so HANDLE/HWND/HMONITOR are
+# treated as pointer-sized on 64-bit Python (ctypes otherwise defaults to
+# c_int and truncates the high 32 bits of pointer-sized returns).
+# ---------------------------------------------------------------------------
+
+_k32 = ctypes.windll.kernel32
+_u32 = ctypes.windll.user32
+
+_k32.OpenProcess.restype = wintypes.HANDLE
+_k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+_k32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+_k32.QueryFullProcessImageNameW.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+]
+_k32.CloseHandle.restype = wintypes.BOOL
+_k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+_u32.GetForegroundWindow.restype = wintypes.HWND
+_u32.GetForegroundWindow.argtypes = []
+_u32.GetWindowThreadProcessId.restype = wintypes.DWORD
+_u32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+_u32.GetWindowRect.restype = wintypes.BOOL
+_u32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+_u32.MonitorFromWindow.restype = wintypes.HMONITOR
+_u32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+_u32.IsWindowVisible.restype = wintypes.BOOL
+_u32.IsWindowVisible.argtypes = [wintypes.HWND]
+_u32.GetWindowTextLengthW.restype = ctypes.c_int
+_u32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+_u32.GetWindowTextW.restype = ctypes.c_int
+_u32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+_u32.EnumWindows.restype = wintypes.BOOL
+_u32.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
+_u32.EnumDisplayMonitors.restype = wintypes.BOOL
+_u32.EnumDisplayMonitors.argtypes = [
+    wintypes.HDC, ctypes.POINTER(wintypes.RECT), ctypes.c_void_p, wintypes.LPARAM,
+]
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
@@ -77,9 +116,9 @@ def _get_uia() -> Optional[Any]:
     if _uia_init_failed:
         return None
     try:
-        import comtypes.client  # noqa: WPS433
+        import comtypes.client
         comtypes.client.GetModule("UIAutomationCore.dll")
-        from comtypes.gen import UIAutomationClient as _UIA  # noqa: WPS433
+        from comtypes.gen import UIAutomationClient as _UIA
         _uia_instance = comtypes.client.CreateObject(
             _UIA.CUIAutomation, interface=_UIA.IUIAutomation
         )
@@ -129,19 +168,18 @@ def _rect_from_uia(element_ref) -> Optional[dict]:
 def _process_exe_name(pid: int) -> str:
     """Return lowercase basename of the executable owning pid, or ''."""
     try:
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        handle = _k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not handle:
             return ""
         try:
             buf = ctypes.create_unicode_buffer(1024)
             size = wintypes.DWORD(1024)
-            ok = kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+            ok = _k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
             if not ok:
                 return ""
             return os.path.basename(buf.value).lower()
         finally:
-            kernel32.CloseHandle(handle)
+            _k32.CloseHandle(handle)
     except Exception as exc:  # noqa: BLE001
         logger.warning("process name lookup failed for pid %s: %s", pid, exc)
         return ""
@@ -151,7 +189,7 @@ def _hwnd_browser_tag(hwnd: int) -> Optional[str]:
     """Return 'chrome' | 'edge' | 'firefox' if hwnd is a browser window, else None."""
     try:
         pid = wintypes.DWORD()
-        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        _u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         return _BROWSER_EXES.get(_process_exe_name(pid.value))
     except Exception as exc:  # noqa: BLE001
         logger.warning("browser tag lookup failed for hwnd %s: %s", hwnd, exc)
@@ -161,7 +199,7 @@ def _hwnd_browser_tag(hwnd: int) -> Optional[str]:
 def _hwnd_rect_logical(hwnd: int) -> Optional[dict]:
     try:
         rect = wintypes.RECT()
-        if not ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        if not _u32.GetWindowRect(hwnd, ctypes.byref(rect)):
             return None
         return _physical_to_logical(
             rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
@@ -174,9 +212,8 @@ def _hwnd_rect_logical(hwnd: int) -> Optional[dict]:
 def _hwnd_monitor_index(hwnd: int) -> int:
     """Return 0-based index of the monitor the window is primarily on."""
     try:
-        user32 = ctypes.windll.user32
         MONITOR_DEFAULTTONEAREST = 2
-        target = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        target = _u32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
         monitors: list[int] = []
         MONITORENUMPROC = ctypes.WINFUNCTYPE(
             wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC,
@@ -187,7 +224,7 @@ def _hwnd_monitor_index(hwnd: int) -> int:
             monitors.append(int(hmon))
             return 1
 
-        user32.EnumDisplayMonitors(0, None, MONITORENUMPROC(_cb), 0)
+        _u32.EnumDisplayMonitors(0, None, MONITORENUMPROC(_cb), 0)
         if target and int(target) in monitors:
             return monitors.index(int(target))
         return 0
@@ -200,14 +237,13 @@ def _enum_browser_windows() -> list[tuple[int, str]]:
     """Return [(hwnd, browser_tag), ...] for all visible top-level browser windows."""
     results: list[tuple[int, str]] = []
     try:
-        user32 = ctypes.windll.user32
         WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
         def _cb(hwnd, _lparam):  # pragma: no cover - ctypes cb
             try:
-                if not user32.IsWindowVisible(hwnd):
+                if not _u32.IsWindowVisible(hwnd):
                     return 1
-                length = user32.GetWindowTextLengthW(hwnd)
+                length = _u32.GetWindowTextLengthW(hwnd)
                 if length <= 0:
                     return 1
                 tag = _hwnd_browser_tag(hwnd)
@@ -217,7 +253,7 @@ def _enum_browser_windows() -> list[tuple[int, str]]:
                 pass
             return 1
 
-        user32.EnumWindows(WNDENUMPROC(_cb), 0)
+        _u32.EnumWindows(WNDENUMPROC(_cb), 0)
     except Exception as exc:  # noqa: BLE001
         logger.warning("EnumWindows failed: %s", exc)
     return results
@@ -225,12 +261,11 @@ def _enum_browser_windows() -> list[tuple[int, str]]:
 
 def _hwnd_title(hwnd: int) -> str:
     try:
-        user32 = ctypes.windll.user32
-        length = user32.GetWindowTextLengthW(hwnd)
+        length = _u32.GetWindowTextLengthW(hwnd)
         if length <= 0:
             return ""
         buf = ctypes.create_unicode_buffer(length + 1)
-        user32.GetWindowTextW(hwnd, buf, length + 1)
+        _u32.GetWindowTextW(hwnd, buf, length + 1)
         return buf.value
     except Exception as exc:  # noqa: BLE001
         logger.warning("window title read failed for hwnd %s: %s", hwnd, exc)
@@ -244,8 +279,7 @@ def _hwnd_title(hwnd: int) -> str:
 def get_active_browser_window() -> Optional[dict]:
     """Return info about the active browser window, or None."""
     try:
-        user32 = ctypes.windll.user32
-        fg = int(user32.GetForegroundWindow())
+        fg = int(_u32.GetForegroundWindow() or 0)
         candidate_hwnd: Optional[int] = None
         browser_tag: Optional[str] = None
         if fg:
@@ -323,9 +357,8 @@ def get_scrollable_regions(hwnd: int) -> list[dict]:
                 pattern = el.GetCurrentPattern(_UIA_ScrollPatternId)
                 if pattern is None:
                     continue
-                sp = pattern.QueryInterface(
-                    __import__("comtypes.gen.UIAutomationClient", fromlist=["IUIAutomationScrollPattern"]).IUIAutomationScrollPattern
-                )
+                from comtypes.gen.UIAutomationClient import IUIAutomationScrollPattern
+                sp = pattern.QueryInterface(IUIAutomationScrollPattern)
                 v = bool(sp.CurrentVerticallyScrollable)
                 h = bool(sp.CurrentHorizontallyScrollable)
                 vp = float(sp.CurrentVerticalScrollPercent) if v else -1.0
@@ -349,20 +382,24 @@ def get_scrollable_regions(hwnd: int) -> list[dict]:
 
 
 def scroll_element(element_ref, direction: str, amount: str) -> bool:
-    """Scroll via UIA ScrollPattern. Returns False if pattern unavailable."""
+    """Scroll via UIA ScrollPattern. Returns False if pattern unavailable
+    or if direction/amount are not one of the documented values."""
+    if amount not in ("small", "large"):
+        logger.warning("scroll_element: unknown amount %r", amount)
+        return False
+    if direction not in ("up", "down"):
+        logger.warning("scroll_element: unknown direction %r", direction)
+        return False
     try:
         pattern = element_ref.GetCurrentPattern(_UIA_ScrollPatternId)
         if pattern is None:
             return False
-        from comtypes.gen.UIAutomationClient import IUIAutomationScrollPattern  # noqa: WPS433
+        from comtypes.gen.UIAutomationClient import IUIAutomationScrollPattern
         sp = pattern.QueryInterface(IUIAutomationScrollPattern)
         if direction == "down":
             v = _ScrollAmount_LargeIncrement if amount == "large" else _ScrollAmount_SmallIncrement
-        elif direction == "up":
-            v = _ScrollAmount_LargeDecrement if amount == "large" else _ScrollAmount_SmallDecrement
         else:
-            logger.warning("scroll_element: unknown direction %r", direction)
-            return False
+            v = _ScrollAmount_LargeDecrement if amount == "large" else _ScrollAmount_SmallDecrement
         sp.Scroll(_ScrollAmount_NoAmount, v)
         return True
     except Exception as exc:  # noqa: BLE001
@@ -410,7 +447,7 @@ def is_protected_element(element_ref) -> bool:
         try:
             vp = element_ref.GetCurrentPattern(_UIA_ValuePatternId)
             if vp is not None:
-                from comtypes.gen.UIAutomationClient import IUIAutomationValuePattern  # noqa: WPS433
+                from comtypes.gen.UIAutomationClient import IUIAutomationValuePattern
                 value = str(vp.QueryInterface(IUIAutomationValuePattern).CurrentValue or "")
         except Exception:  # noqa: BLE001
             value = ""
@@ -448,18 +485,35 @@ def get_element_metadata(element_ref) -> dict:
         except Exception:  # noqa: BLE001
             meta["is_expandable"] = False
         meta["is_protected"] = is_protected_element(element_ref)
-        try:
-            uia = _get_uia()
-            if uia is not None:
-                walker = uia.ControlViewWalker
+        uia = _get_uia()
+        if uia is not None:
+            walker = uia.ControlViewWalker
+            # children: iterate GetNextSiblingElement, stopping on COM errors
+            count = 0
+            try:
                 child = walker.GetFirstChildElement(element_ref)
-                count = 0
-                while child is not None and count < 4096:
-                    count += 1
+            except Exception:  # noqa: BLE001
+                child = None
+            while child is not None and count < 4096:
+                count += 1
+                try:
                     child = walker.GetNextSiblingElement(child)
-                meta["children_count"] = count
-        except Exception:  # noqa: BLE001
-            meta["children_count"] = 0
+                except Exception:  # noqa: BLE001
+                    break
+            meta["children_count"] = count
+            # depth: walk up via GetParentElement, stopping on None or COM errors
+            depth = 0
+            try:
+                parent = walker.GetParentElement(element_ref)
+            except Exception:  # noqa: BLE001
+                parent = None
+            while parent is not None and depth < 4096:
+                depth += 1
+                try:
+                    parent = walker.GetParentElement(parent)
+                except Exception:  # noqa: BLE001
+                    break
+            meta["depth"] = depth
     except Exception as exc:  # noqa: BLE001
         logger.warning("get_element_metadata failed: %s", exc)
     return meta
