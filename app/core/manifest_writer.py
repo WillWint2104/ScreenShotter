@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+from pathlib import Path
 from app.models.capture_session import CaptureSession
 from app.models.capture_config import CaptureConfig
 
@@ -42,9 +43,9 @@ def _write(session: CaptureSession, config: CaptureConfig) -> None:
 # ---------------------------------------------------------------------------
 
 def write_section_manifest(
-    session_dir: "Path",
-    session: "CaptureSession",
-    config: "CaptureConfig",
+    session_dir: Path,
+    session: CaptureSession,
+    config: CaptureConfig,
     sections: list,
     profile_match: dict | None = None,
 ) -> None:
@@ -53,8 +54,6 @@ def write_section_manifest(
     results and profile match information.
     Writes to manifest.json alongside existing fields.
     """
-    from pathlib import Path
-
     base_data = _build_base(session, config)
     base_data["sections_discovered"] = [
         s.as_dict() if hasattr(s, "as_dict") else s
@@ -74,7 +73,7 @@ def write_section_manifest(
     )
 
 
-def _build_base(session: "CaptureSession", config: "CaptureConfig") -> dict:
+def _build_base(session: CaptureSession, config: CaptureConfig) -> dict:
     """
     Build the base manifest dict shared by all write functions.
     """

@@ -84,7 +84,7 @@ class Tagger:
             )
             return True
         except Exception as exc:
-            logger.warning("Failed to flush tags: %s", exc)
+            logger.warning("Failed to flush tags: %s", exc, exc_info=True)
             return False
 
     def get_tags(self) -> list[TaggedScreenshot]:
@@ -137,7 +137,7 @@ class Tagger:
             )
             return True
         except Exception as exc:
-            logger.warning("Failed to load tags: %s", exc)
+            logger.warning("Failed to load tags: %s", exc, exc_info=True)
             return False
 
     @property
