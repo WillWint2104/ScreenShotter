@@ -74,13 +74,20 @@ class Batcher:
         result = self._group_tags(tags)
         result = self._enforce_purity(result)
         result = self._flag_missing(result)
-        self._write(result)
+        write_ok = self._write(result)
+        if not write_ok:
+            logger.warning(
+                "batch.json write failed for session %s — "
+                "BatchResult is correct in memory but not persisted.",
+                self._session_dir,
+            )
 
         logger.info(
-            "Batch complete: %d groups, contamination=%s, missing=%s",
+            "Batch complete: %d groups, contamination=%s, missing=%s, persisted=%s",
             len(result.groups),
             result.contamination_detected,
             result.missing_sections,
+            write_ok,
         )
         return result
 
@@ -108,8 +115,11 @@ class Batcher:
             created_at=datetime.now().isoformat(),
         )
 
-        # Initialise all valid groups as empty
-        for group_name in VALID_SECTION_GROUPS:
+        # Initialise all valid groups as empty.
+        # Sort the canonical group names so result.groups insertion
+        # order and downstream JSON output are deterministic across
+        # runs (VALID_SECTION_GROUPS is a frozenset).
+        for group_name in sorted(VALID_SECTION_GROUPS):
             result.groups[group_name] = SectionGroup(
                 group_name=group_name
             )
@@ -183,8 +193,11 @@ class Batcher:
         Core sections that should always be present:
           prompt, response_a, response_b
         All others are optional.
+
+        Iteration order is fixed (tuple, not set) so
+        result.missing_sections is deterministic across runs.
         """
-        required_sections = {"prompt", "response_a", "response_b"}
+        required_sections = ("prompt", "response_a", "response_b")
 
         for section_name in required_sections:
             group = result.groups.get(section_name)
@@ -207,8 +220,10 @@ class Batcher:
             )
             logger.info("batch.json written to %s", self._batch_path)
             return True
-        except Exception as exc:
-            logger.warning("Failed to write batch.json: %s", exc)
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Failed to write batch.json: %s", exc, exc_info=True,
+            )
             return False
 
     def _empty_result(self) -> BatchResult:
@@ -216,10 +231,21 @@ class Batcher:
             session_id=self._session_dir.name,
             created_at=datetime.now().isoformat(),
         )
-        for group_name in VALID_SECTION_GROUPS:
+        # Deterministic iteration order over the frozenset.
+        ordered_groups = sorted(VALID_SECTION_GROUPS)
+        for group_name in ordered_groups:
             result.groups[group_name] = SectionGroup(
                 group_name=group_name,
                 missing=True,
             )
-        result.missing_sections = list(VALID_SECTION_GROUPS)
+        result.missing_sections = list(ordered_groups)
+        # Persist the empty/all-missing artifact too so downstream
+        # consumers always see a valid batch.json on disk, even when
+        # there were no tags or load_from_session() failed.
+        write_ok = self._write(result)
+        if not write_ok:
+            logger.warning(
+                "Empty batch.json write failed for session %s.",
+                self._session_dir,
+            )
         return result
