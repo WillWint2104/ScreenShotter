@@ -21,11 +21,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.models.section import DiscoveredSection
+from app.models.section import DiscoveredSection, SectionRect
 from app.utils.uia_utils import (
-    get_scrollable_regions,
     get_element_metadata,
     is_protected_element,
+    _get_uia,
+    _PROTECTED_TOKENS as _PROTECTED_WORDS,
 )
 
 logger = logging.getLogger(__name__)
@@ -162,8 +163,12 @@ class Expander:
                 meta = _safe_metadata(child)
                 if not meta:
                     continue
-                if self._is_expandable_candidate(meta, section):
-                    meta["element_ref"] = child
+                # Attach the element reference BEFORE the safety check
+                # so Condition 1 can run is_protected_element against
+                # the real UIA element (the metadata dict alone does
+                # not carry the ref).
+                meta["element_ref"] = child
+                if self._is_expandable_candidate(meta, section, child):
                     candidates.append(meta)
         except Exception as exc:
             logger.warning(
@@ -176,6 +181,7 @@ class Expander:
         self,
         meta: dict,
         section: DiscoveredSection,
+        element_ref: Any = None,
     ) -> bool:
         """
         Condition 1: not protected
@@ -183,10 +189,15 @@ class Expander:
         Condition 3: role or name suggests expandability
         Condition 4 checked at click time (state change)
         """
-        element_ref = meta.get("element_ref")
+        # Allow the meta dict to carry element_ref too, for callers
+        # (and tests) that prefer to embed it. The explicit parameter
+        # takes precedence so live discovery passes the real ref.
+        if element_ref is None:
+            element_ref = meta.get("element_ref")
 
-        # Condition 1 — protected check
-        if element_ref and is_protected_element(element_ref):
+        # Condition 1 — protected check (UIA-level when ref available,
+        # name-string fallback always).
+        if element_ref is not None and is_protected_element(element_ref):
             return False
         name_lower = meta.get("name", "").lower()
         if any(p in name_lower for p in _PROTECTED_WORDS):
@@ -214,8 +225,12 @@ class Expander:
         role = candidate.get("role", "")
         container_id = section.section_id
 
-        # Skip known false candidates
-        candidate_key = f"{container_id}:{name}:{role}"
+        # Skip known false candidates. Include rect coords in the
+        # key so multiple distinct "Show more" buttons in the same
+        # section don't share a fingerprint.
+        rect = candidate.get("rect", {}) or {}
+        rect_key = f"{rect.get('x', 0)},{rect.get('y', 0)}"
+        candidate_key = f"{container_id}:{name}:{role}:{rect_key}"
         if candidate_key in self._false_candidates:
             return ExpansionAttempt(
                 element_name=name,
@@ -278,48 +293,54 @@ class Expander:
 # ----------------------------------------------------------
 # Private helpers
 # ----------------------------------------------------------
-
-_PROTECTED_WORDS = {
-    "submit", "escape", "cancel", "skip", "next",
-    "back", "flag", "close", "dismiss", "abort",
-    "finish", "complete", "done",
-}
+# Note: _PROTECTED_WORDS is imported at the top of this module from
+# app.utils.uia_utils as the canonical _PROTECTED_TOKENS set, so the
+# expander and uia_utils share a single source of truth.
 
 
 def _safe_metadata(element_ref: Any) -> dict | None:
     try:
-        from app.utils.uia_utils import get_element_metadata
         return get_element_metadata(element_ref)
     except Exception:
+        logger.debug("get_element_metadata failed", exc_info=True)
         return None
 
 
 def _get_children(element_ref: Any) -> list[Any]:
-    try:
-        import comtypes
-        walker = None
-        children = []
-        try:
-            import comtypes.client
-            UIA = comtypes.client.CreateObject(
-                "{ff48dba4-60ef-4201-aa87-54103eef594e}",
-                interface=comtypes.gen.UIAutomationClient.IUIAutomation,
-            )
-            walker = UIA.ControlViewWalker
-            child = walker.GetFirstChildElement(element_ref)
-            while child is not None:
-                children.append(child)
-                child = walker.GetNextSiblingElement(child)
-        except Exception:
-            pass
+    """Walk the ControlView from element_ref and return its direct children.
+
+    Reuses the cached IUIAutomation singleton from uia_utils to avoid
+    creating a new COM object per call. Walker errors terminate the
+    iteration but preserve any children already collected (mirrors the
+    Chromium-virtualised-tree handling in get_element_metadata).
+    """
+    children: list[Any] = []
+    uia = _get_uia()
+    if uia is None:
         return children
-    except Exception:
-        return []
+    try:
+        walker = uia.ControlViewWalker
+    except Exception as exc:
+        logger.debug("ControlViewWalker unavailable: %s", exc)
+        return children
+    try:
+        child = walker.GetFirstChildElement(element_ref)
+    except Exception as exc:
+        logger.debug("GetFirstChildElement failed: %s", exc)
+        return children
+    while child is not None and len(children) < 4096:
+        children.append(child)
+        try:
+            child = walker.GetNextSiblingElement(child)
+        except Exception as exc:
+            logger.debug("GetNextSiblingElement stopped: %s", exc)
+            break
+    return children
 
 
 def _within_section(
     elem_rect: dict,
-    section_rect: "SectionRect",
+    section_rect: SectionRect,
 ) -> bool:
     if not elem_rect:
         return False
@@ -342,18 +363,32 @@ def _get_section_height(section: DiscoveredSection) -> int:
 
 
 def _invoke_element(element_ref: Any) -> None:
+    """Click an element via UIA InvokePattern, falling back to focus+space.
+
+    Raises RuntimeError when both paths fail so the caller in
+    _attempt_expansion can record the attempt as 'blocked' instead
+    of misreading a true click failure as 'no_change'.
+    """
+    invoke_errors: list[str] = []
     try:
-        import comtypes
         import comtypes.gen.UIAutomationClient as UIA
         invoke = element_ref.GetCurrentPattern(UIA.UIA_InvokePatternId)
         if invoke:
             invoke.QueryInterface(UIA.IUIAutomationInvokePattern).Invoke()
             return
-    except Exception:
-        pass
+        invoke_errors.append("InvokePattern unavailable on element")
+    except Exception as exc:
+        invoke_errors.append(f"InvokePattern: {exc}")
+        logger.debug("InvokePattern failed: %s", exc)
     try:
         element_ref.SetFocus()
         import pyautogui
         pyautogui.press("space")
-    except Exception:
-        pass
+        return
+    except Exception as exc:
+        invoke_errors.append(f"focus+space: {exc}")
+        logger.warning("All invoke methods failed: %s", invoke_errors)
+        raise RuntimeError(
+            "_invoke_element exhausted all paths: "
+            + " | ".join(invoke_errors)
+        ) from exc
