@@ -245,7 +245,7 @@ class ImprovementEngine:
                     "patterns_detected":  data.get("patterns_detected", []),
                     "summary":            data.get("summary", ""),
                 })
-            except Exception as exc:
+            except (OSError, json.JSONDecodeError) as exc:
                 logger.warning("Failed to read report %s: %s", path.name, exc)
         return reports
 
@@ -274,7 +274,7 @@ class ImprovementEngine:
             dest = (
                 _EVALUATIONS_DIR / f"{safe_id}_evaluation.json"
             ).resolve()
-            if Path(_EVALUATIONS_DIR).resolve() not in dest.parents:
+            if _EVALUATIONS_DIR.resolve() not in dest.parents:
                 logger.warning(
                     "Rejected index_evaluation: path escape (input=%r, "
                     "resolved=%s)", session_id, dest,
