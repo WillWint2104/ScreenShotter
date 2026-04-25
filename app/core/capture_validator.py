@@ -110,13 +110,18 @@ class CaptureValidator:
         duplicates     = self._find_duplicates(tagger)
         contaminated   = batch_result.contamination_detected
 
-        overall = self._compute_overall_confidence(
+        overall_raw = self._compute_overall_confidence(
             section_scores=section_scores,
             ocr_quality=ocr_quality.overall,
             missing_count=len(missing),
             contaminated=contaminated,
             duplicate_count=len(duplicates),
         )
+        # Round once and use the same value for every downstream
+        # decision so threshold-edge captures (e.g., 0.7199 -> 0.72)
+        # cannot end up with a recommended_action that disagrees
+        # with the persisted overall_capture_confidence.
+        overall = round(overall_raw, 4)
 
         action = self._recommend_action(overall, missing, contaminated)
 
@@ -134,7 +139,7 @@ class CaptureValidator:
             missing_sections=missing,
             duplicate_sections=duplicates,
             ocr_quality=ocr_quality,
-            overall_capture_confidence=round(overall, 4),
+            overall_capture_confidence=overall,
             recommended_action=action,
         )
 
@@ -266,13 +271,16 @@ class CaptureValidator:
     def _ocr_quality_for_files(self, filenames: list[str]) -> float:
         if not filenames:
             return 0.0
-        scores = []
+        # Treat unreadable/missing screenshots as 0.0 so they pull
+        # the section average down. Silently dropping them would let
+        # a section that lost most of its captures still report the
+        # OCR score of its few surviving images.
+        scores: list[float] = []
         for filename in filenames:
             path = self._screenshots_dir / filename
             score = self._estimate_ocr_quality(path)
-            if score is not None:
-                scores.append(score)
-        return round(sum(scores) / len(scores), 4) if scores else 0.0
+            scores.append(score if score is not None else 0.0)
+        return round(sum(scores) / len(scores), 4)
 
     def _estimate_ocr_quality(self, path: Path) -> float | None:
         """
