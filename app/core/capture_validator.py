@@ -138,19 +138,30 @@ class CaptureValidator:
             recommended_action=action,
         )
 
-        self._write(evaluation)
+        write_ok = self._write(evaluation)
 
-        # Feed back to profile proficiency if profile known
+        # Feed back to profile proficiency only when the evaluation
+        # was actually persisted. If the disk write failed we don't
+        # want profile proficiency to drift away from the evidence
+        # on disk — the next session would have no persisted record
+        # to reconcile with.
         if profile_manager and profile_name:
-            profile_manager.record_session_result(
-                profile_name=profile_name,
-                capture_confidence=overall,
-                success=(action == "accept"),
-            )
-            logger.info(
-                "Proficiency updated for profile '%s': confidence=%.3f",
-                profile_name, overall,
-            )
+            if write_ok:
+                profile_manager.record_session_result(
+                    profile_name=profile_name,
+                    capture_confidence=overall,
+                    success=(action == "accept"),
+                )
+                logger.info(
+                    "Proficiency updated for profile '%s': confidence=%.3f",
+                    profile_name, overall,
+                )
+            else:
+                logger.warning(
+                    "Skipping proficiency update for '%s' — "
+                    "evaluation.json write failed.",
+                    profile_name,
+                )
 
         return evaluation
 
@@ -366,6 +377,13 @@ class CaptureValidator:
         critical_missing = {"prompt", "response_a", "response_b"}
         if critical_missing & set(missing):
             return "retry"
+        # Any other missing section blocks 'accept'. The current
+        # batcher only flags critical sections as missing, so this
+        # branch is forward-compat: if a future batcher starts
+        # tracking non-critical absences, an incomplete capture
+        # never returns 'accept'.
+        if missing:
+            return "review" if confidence >= CONFIDENCE_REVIEW else "retry"
         if confidence >= CONFIDENCE_ACCEPT:
             return "accept"
         if confidence >= CONFIDENCE_REVIEW:
