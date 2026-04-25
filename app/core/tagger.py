@@ -42,13 +42,22 @@ class Tagger:
         Create and store a tag for one screenshot.
         Called immediately after each screenshot is saved.
         """
+        # Snapshot the rect: store a fresh SectionRect so later
+        # mutations of section.rect (live UIA bounds shift, etc.)
+        # cannot retroactively change historical tags.
+        rect_snapshot = SectionRect(
+            x=section.rect.x,
+            y=section.rect.y,
+            width=section.rect.width,
+            height=section.rect.height,
+        )
         tagged = TaggedScreenshot(
             filename=filename,
             capture_index=capture_index,
             section_id=section.section_id,
             section_type=section.section_type,
             scroll_position=round(scroll_position, 4),
-            rect=section.rect,
+            rect=rect_snapshot,
             timestamp=datetime.now().isoformat(),
         )
         self._tags.append(tagged)
@@ -83,7 +92,7 @@ class Tagger:
                 self._tags_path,
             )
             return True
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             logger.warning("Failed to flush tags: %s", exc, exc_info=True)
             return False
 
@@ -112,7 +121,9 @@ class Tagger:
             data = json.loads(
                 self._tags_path.read_text(encoding="utf-8")
             )
-            self._tags = []
+            # Build into a temporary list first so a malformed entry
+            # cannot leave self._tags half-loaded on failure.
+            loaded_tags: list[TaggedScreenshot] = []
             for entry in data.get("tags", []):
                 rect_data = entry.get("rect", {})
                 rect = SectionRect(
@@ -121,7 +132,7 @@ class Tagger:
                     width=rect_data.get("width", 0),
                     height=rect_data.get("height", 0),
                 )
-                self._tags.append(TaggedScreenshot(
+                loaded_tags.append(TaggedScreenshot(
                     filename=entry.get("filename", ""),
                     capture_index=entry.get("capture_index", 0),
                     section_id=entry.get("section_id", ""),
@@ -130,13 +141,17 @@ class Tagger:
                     rect=rect,
                     timestamp=entry.get("timestamp", ""),
                 ))
+            self._tags = loaded_tags
             logger.info(
                 "Loaded %d tags from %s",
                 len(self._tags),
                 self._tags_path,
             )
             return True
-        except Exception as exc:
+        except (
+            OSError, json.JSONDecodeError, TypeError, ValueError,
+            KeyError, AttributeError,
+        ) as exc:
             logger.warning("Failed to load tags: %s", exc, exc_info=True)
             return False
 
