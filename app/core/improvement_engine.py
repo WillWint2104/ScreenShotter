@@ -13,6 +13,7 @@ See ARCHITECTURE.md — Improvement Engine Constraints.
 """
 import json
 import logging
+import re
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,12 @@ PATTERN_THRESHOLD = 0.40
 _DATA_DIR        = Path(__file__).resolve().parents[2] / "data"
 _EVALUATIONS_DIR = _DATA_DIR / "evaluations"
 _IMPROVEMENTS_DIR = _DATA_DIR / "improvements"
+
+# Whitelist for session_id slugs used in index_evaluation: alnum,
+# underscore, hyphen, dot. Anything else is stripped to block path
+# traversal (e.g. '../etc/passwd') and unexpected subdirectories.
+_SESSION_ID_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
+_SESSION_ID_MAX_LEN = 96
 
 
 class ImprovementEngine:
@@ -111,7 +118,16 @@ class ImprovementEngine:
             summary=self._summarise(evaluations, recommendations),
         )
 
-        self._write_report(report)
+        # If persistence fails the report_id we'd advertise points at
+        # nothing on disk, so approve_recommendation/reject_recommendation
+        # would fail to find it. Surface the failure to the caller
+        # rather than handing back a phantom report.
+        if not self._write_report(report):
+            logger.error(
+                "Improvement report %s failed to persist — discarding.",
+                report.report_id,
+            )
+            return None
         logger.info(
             "Improvement report generated: %d recommendations, "
             "%d patterns detected",
@@ -144,9 +160,21 @@ class ImprovementEngine:
             data = json.loads(report_path.read_text(encoding="utf-8"))
             for rec in data.get("recommendations", []):
                 if rec["recommendation_id"] == recommendation_id:
+                    # Stick to the ImprovementRecommendation model
+                    # (Spec 2): only approval_status and approved_by
+                    # are dedicated fields. The timestamp is appended
+                    # to 'notes' for the audit trail without inventing
+                    # off-model keys. 'applied_at' stays empty —
+                    # approval is not application.
                     rec["approval_status"] = "approved"
                     rec["approved_by"] = approved_by
-                    rec["approved_at"] = datetime.now().isoformat()
+                    timestamp = datetime.now().isoformat()
+                    existing = rec.get("notes", "") or ""
+                    sep = "\n" if existing else ""
+                    rec["notes"] = (
+                        f"{existing}{sep}approved at {timestamp} "
+                        f"by {approved_by}"
+                    )
                     report_path.write_text(
                         json.dumps(data, indent=2), encoding="utf-8"
                     )
@@ -160,8 +188,10 @@ class ImprovementEngine:
                 recommendation_id, report_id,
             )
             return False
-        except Exception as exc:
-            logger.warning("Failed to approve recommendation: %s", exc)
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.warning(
+                "Failed to approve recommendation: %s", exc, exc_info=True,
+            )
             return False
 
     def reject_recommendation(
@@ -181,7 +211,10 @@ class ImprovementEngine:
             for rec in data.get("recommendations", []):
                 if rec["recommendation_id"] == recommendation_id:
                     rec["approval_status"] = "rejected"
-                    rec["rejected_at"] = datetime.now().isoformat()
+                    timestamp = datetime.now().isoformat()
+                    existing = rec.get("notes", "") or ""
+                    sep = "\n" if existing else ""
+                    rec["notes"] = f"{existing}{sep}rejected at {timestamp}"
                     report_path.write_text(
                         json.dumps(data, indent=2), encoding="utf-8"
                     )
@@ -190,8 +223,10 @@ class ImprovementEngine:
                     )
                     return True
             return False
-        except Exception as exc:
-            logger.warning("Failed to reject recommendation: %s", exc)
+        except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+            logger.warning(
+                "Failed to reject recommendation: %s", exc, exc_info=True,
+            )
             return False
 
     def list_reports(self) -> list[dict]:
@@ -220,19 +255,41 @@ class ImprovementEngine:
         """
         Copy or symlink an evaluation.json into the evaluations index.
         Called after each session completes.
+
+        session_id is sanitized (whitelist [A-Za-z0-9._-], capped at
+        96 chars) before being used in the destination filename so a
+        hostile or malformed value cannot escape _EVALUATIONS_DIR.
+        Defence-in-depth: the resolved destination path is verified
+        to live inside _EVALUATIONS_DIR before writing.
         """
+        safe_id = _safe_session_id(session_id)
+        if not safe_id:
+            logger.warning(
+                "Rejected index_evaluation: empty session_id after "
+                "sanitization (input=%r)", session_id,
+            )
+            return False
         try:
             _EVALUATIONS_DIR.mkdir(parents=True, exist_ok=True)
-            dest = _EVALUATIONS_DIR / f"{session_id}_evaluation.json"
+            dest = (
+                _EVALUATIONS_DIR / f"{safe_id}_evaluation.json"
+            ).resolve()
+            if Path(_EVALUATIONS_DIR).resolve() not in dest.parents:
+                logger.warning(
+                    "Rejected index_evaluation: path escape (input=%r, "
+                    "resolved=%s)", session_id, dest,
+                )
+                return False
             dest.write_text(
                 evaluation_path.read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
-            logger.debug("Indexed evaluation for session %s", session_id)
+            logger.debug("Indexed evaluation for session %s", safe_id)
             return True
-        except Exception as exc:
+        except (OSError, ValueError) as exc:
             logger.warning(
-                "Failed to index evaluation for %s: %s", session_id, exc
+                "Failed to index evaluation for %s: %s",
+                session_id, exc, exc_info=True,
             )
             return False
 
@@ -419,12 +476,22 @@ class ImprovementEngine:
     # ----------------------------------------------------------
 
     def _load_evaluations(self, profile_name: str = "") -> list[dict]:
+        """
+        Load every *_evaluation.json from the evaluations index.
+
+        When profile_name is non-empty, return only evaluations whose
+        stored 'profile_name' field matches. CaptureValidator does not
+        currently embed profile_name in evaluation.json — once it does,
+        this filter activates without further changes here.
+        """
         evaluations = []
         for path in sorted(_EVALUATIONS_DIR.glob("*_evaluation.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
+                if profile_name and data.get("profile_name") != profile_name:
+                    continue
                 evaluations.append(data)
-            except Exception as exc:
+            except (OSError, json.JSONDecodeError) as exc:
                 logger.warning(
                     "Failed to load evaluation %s: %s", path.name, exc
                 )
@@ -456,6 +523,25 @@ class ImprovementEngine:
             )
             logger.info("Improvement report written: %s", path)
             return True
-        except Exception as exc:
-            logger.warning("Failed to write improvement report: %s", exc)
+        except (OSError, TypeError, ValueError) as exc:
+            logger.warning(
+                "Failed to write improvement report: %s",
+                exc, exc_info=True,
+            )
             return False
+
+
+def _safe_session_id(session_id: str) -> str:
+    """Sanitize a session_id into a safe filesystem token.
+
+    Strips every character outside [A-Za-z0-9._-], caps at 96 chars,
+    returns '' on empty result so the caller can reject. Used by
+    index_evaluation() to block path traversal and unexpected
+    subdirectories from caller-supplied IDs.
+    """
+    raw = (session_id or "").strip()
+    cleaned = _SESSION_ID_SAFE.sub("", raw)[:_SESSION_ID_MAX_LEN]
+    # Strip leading dots so '.' / '..' / '...' cannot ever produce
+    # a non-empty cleaned slug that still references a parent.
+    cleaned = cleaned.lstrip(".")
+    return cleaned
