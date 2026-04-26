@@ -10,7 +10,10 @@ __pycache__/
 venv/
 env/
 
-# Runtime data — not tracked
+# Runtime data — everything under data/ ignored by default so future
+# subdirectories (e.g. data/cache/, data/temp/) don't accidentally
+# get tracked. Explicit listings below are kept for clarity.
+data/*
 data/sessions/
 data/evaluations/
 data/improvements/
