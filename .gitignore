@@ -10,8 +10,17 @@ __pycache__/
 venv/
 env/
 
-# Runtime / user data
-data/
+# Runtime data — not tracked
+data/sessions/
+data/evaluations/
+data/improvements/
+data/logs/
+
+# Config is tracked — default profile ships with repo
+!data/config/
+!data/config/profiles/
+!data/config/profiles/default.json
+
 *.log
 
 # IDE
