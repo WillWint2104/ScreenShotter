@@ -10,8 +10,20 @@ __pycache__/
 venv/
 env/
 
-# Runtime / user data
-data/
+# Runtime data — everything under data/ ignored by default so future
+# subdirectories (e.g. data/cache/, data/temp/) don't accidentally
+# get tracked. Explicit listings below are kept for clarity.
+data/*
+data/sessions/
+data/evaluations/
+data/improvements/
+data/logs/
+
+# Config is tracked — default profile ships with repo
+!data/config/
+!data/config/profiles/
+!data/config/profiles/default.json
+
 *.log
 
 # IDE
