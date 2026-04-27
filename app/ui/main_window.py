@@ -15,6 +15,7 @@ from app.ui.capture_toolbar import CaptureToolbar
 from app.ui.capture_flash import CaptureFlash
 from app.ui.region_preview import RegionPreview
 from app.core.capture_engine import CaptureWorker
+from app.core.orchestrator import CapturePipelineWorker
 from app.core.scroll_logic import scroll_back_to
 from app.models.capture_config import CaptureConfig, RegionCoords
 
@@ -38,7 +39,7 @@ class _ScrollBackWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self._worker: CaptureWorker | None = None
+        self._worker: CaptureWorker | CapturePipelineWorker | None = None
         self._toolbar: CaptureToolbar | None = None
         self._flash_overlay: CaptureFlash | None = None
         self._region_preview: RegionPreview | None = None
@@ -221,7 +222,7 @@ class MainWindow(QMainWindow):
             end_reference=self._end_reference,
         )
 
-        self._worker = CaptureWorker(config)
+        self._worker = CapturePipelineWorker(config)
         self._worker.progress.connect(self._on_progress)
         self._worker.cycle.connect(self._on_cycle)
         self._worker.status.connect(self.progress.set_status)
