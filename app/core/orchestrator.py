@@ -104,8 +104,16 @@ class CapturePipelineWorker(QThread):
             )
 
             # --- STEP 3: Profile match ---
+            # Real URL retrieval is not yet supported by uia_utils;
+            # passing the window title to urlparse would be garbage.
+            # Empty url_pattern disables the URL signal in
+            # profile_manager (per its 'if reference.url_pattern and
+            # candidate.url_pattern' guard) so the other six signals
+            # do the matching until uia_utils gains get_active_url().
+            # TODO(uia_utils): add a helper to read the foreground
+            # browser tab URL and wire it in here.
             page_data = {
-                "url": browser.get("title", ""),
+                "url": "",
                 "scrollable_regions": [],
                 "landmark_words": [],
                 "field_labels": [],
@@ -315,12 +323,13 @@ class CapturePipelineWorker(QThread):
                 )
 
                 # Tag immediately. UIA does not currently expose a
-                # per-element scroll percentage, so we use the running
-                # capture index as a coarse 0..1 proxy until a real
-                # scroll-percent comes from uia_utils.
+                # per-element scroll percentage, so the field stays
+                # 0.0 ("unknown") rather than carrying the previous
+                # global_index / (global_index + 1) proxy, which was
+                # misleading because it asymptotes to 1.0 regardless
+                # of actual scroll position. Replace with a real
+                # value once uia_utils exposes one.
                 scroll_pct = 0.0
-                if section.element_ref:
-                    scroll_pct = global_index / (global_index + 1)
                 tagger.tag(
                     filename=dest.name,
                     capture_index=global_index,
@@ -340,14 +349,15 @@ class CapturePipelineWorker(QThread):
                         break
                 prev_image = current_image
 
-                # Wait
-                self.cycle.emit("WAITING")
-                time.sleep(config.delay_ms / 1000.0)
-
                 if self._stop_flag:
                     break
 
-                # Scroll section via UIA element if available
+                # Scroll section via UIA element if available.
+                # The legacy CaptureWorker had a pre-scroll sleep
+                # AND a post-scroll sleep, doubling the configured
+                # delay per cycle. Only the post-scroll settling
+                # pause is meaningful (capture itself is instant
+                # via mss.grab) so we keep just that one.
                 self.cycle.emit("SCROLLING")
                 scrolled = False
                 if section.element_ref:
@@ -382,9 +392,11 @@ def _similar(a: Image.Image, b: Image.Image, threshold: float) -> bool:
     b_small = b.resize((64, 64))
     a_pixels = list(a_small.getdata())
     b_pixels = list(b_small.getdata())
+    # strict=True surfaces any future length mismatch immediately
+    # instead of silently truncating to the shorter sequence.
     matches = sum(
-        1 for pa, pb in zip(a_pixels, b_pixels)
-        if all(abs(ca - cb) < 10 for ca, cb in zip(pa, pb))
+        1 for pa, pb in zip(a_pixels, b_pixels, strict=True)
+        if all(abs(ca - cb) < 10 for ca, cb in zip(pa, pb, strict=True))
     )
     return matches / len(a_pixels) >= threshold
 
