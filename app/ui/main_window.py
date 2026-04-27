@@ -39,7 +39,7 @@ class _ScrollBackWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self._worker: CaptureWorker | None = None
+        self._worker: CaptureWorker | CapturePipelineWorker | None = None
         self._toolbar: CaptureToolbar | None = None
         self._flash_overlay: CaptureFlash | None = None
         self._region_preview: RegionPreview | None = None

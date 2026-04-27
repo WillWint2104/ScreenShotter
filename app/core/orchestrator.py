@@ -246,8 +246,11 @@ class CapturePipelineWorker(QThread):
                 session.capture_status = "error"
                 try:
                     manifest_writer.write_final(session, config)
-                except Exception:
-                    pass
+                except Exception as write_exc:
+                    logger.debug(
+                        "Failed to write final manifest during "
+                        "error recovery: %s", write_exc, exc_info=True,
+                    )
             self.error.emit(str(exc))
 
     # ----------------------------------------------------------
@@ -288,8 +291,11 @@ class CapturePipelineWorker(QThread):
                 scroll_element(section.element_ref, "up", "large")
                 scroll_element(section.element_ref, "up", "large")
                 time.sleep(0.3)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Scroll to top failed for section %s: %s",
+                    section.section_id, exc, exc_info=True,
+                )
 
         with mss.mss() as sct:
             while not self._stop_flag:
@@ -308,16 +314,13 @@ class CapturePipelineWorker(QThread):
                     f"[{section.section_type}] {dest.name}"
                 )
 
-                # Tag immediately
+                # Tag immediately. UIA does not currently expose a
+                # per-element scroll percentage, so we use the running
+                # capture index as a coarse 0..1 proxy until a real
+                # scroll-percent comes from uia_utils.
                 scroll_pct = 0.0
                 if section.element_ref:
-                    try:
-                        from app.utils.uia_utils import get_element_metadata
-                        meta = get_element_metadata(section.element_ref)
-                        # scroll_percent not in metadata — use index as proxy
-                        scroll_pct = global_index / max(global_index + 1, 1)
-                    except Exception:
-                        pass
+                    scroll_pct = global_index / (global_index + 1)
                 tagger.tag(
                     filename=dest.name,
                     capture_index=global_index,
@@ -353,8 +356,12 @@ class CapturePipelineWorker(QThread):
                         scrolled = scroll_element(
                             section.element_ref, "down", "large"
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug(
+                            "UIA scroll failed for section %s, "
+                            "using keyboard fallback: %s",
+                            section.section_id, exc, exc_info=True,
+                        )
                 if not scrolled:
                     # Fallback to keyboard scroll
                     scroll_down(section.rect)
@@ -388,7 +395,9 @@ def _make_fallback_section(config: CaptureConfig) -> DiscoveredSection:
     configured region as one unknown section.
     Preserves legacy single-region behaviour.
     """
-    from app.models.section import DiscoveredSection, SectionRect
+    # DiscoveredSection is already imported at module scope; only
+    # SectionRect needs a local import here.
+    from app.models.section import SectionRect
     return DiscoveredSection(
         section_id="fallback",
         section_type="unknown",
